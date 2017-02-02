@@ -238,20 +238,26 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
     val clazz = Class.forName("Test", true, loader)
     val main = clazz.getDeclaredMethod("main", classOf[Array[String]])
 
-    def invoke = Output.withRedirected(logWriter) {
-      Console.withOut(logWriter) {
-        Console.withErr(logWriter) {
-          for ((property, value) <- assembleTestProperties(outDir, logFile))
-            System.setProperty(property, value)
-          try {
-            main.invoke(null, Array("jvm"))
-            true
-          } catch {
-            case t: Throwable =>
-              t.printStackTrace(logWriter)
-              false
-          }
-        }
+    type WithThunk[T] = (=> T) => T
+    def foldWiths[T](withs: Seq[WithThunk[T]]): WithThunk[T] =
+      withs.fold((t => t): WithThunk[T])((acc, with1) => x => acc(with1(x)))
+
+    val withEverything = foldWiths(Seq[WithThunk[Boolean]](
+      Output.withRedirected(logWriter),
+      Console withOut logWriter,
+      Console withErr logWriter
+    ))
+
+    def invoke = withEverything {
+      for ((property, value) <- assembleTestProperties(outDir, logFile))
+        System.setProperty(property, value)
+      try {
+        main.invoke(null, Array("jvm"))
+        true
+      } catch {
+        case t: Throwable =>
+          t.printStackTrace(logWriter)
+          false
       }
     }
     pushTranscript(s"Running Test in $outDir, writing to $logFile")
