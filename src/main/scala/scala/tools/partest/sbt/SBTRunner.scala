@@ -22,7 +22,7 @@ class SBTRunner(val config: RunnerSpec.Config,
                 scalacArgs: Array[String], args: Array[String]) extends AbstractRunner {
 
   // no summary, SBT will do that for us
-  override protected val printSummary = true
+  override protected val printSummary = false
   override protected val partestCmd   = "partest"
 
   val defs = {
