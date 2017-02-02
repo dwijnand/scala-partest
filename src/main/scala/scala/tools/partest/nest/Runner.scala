@@ -21,6 +21,7 @@ import scala.tools.nsc.{ Settings, CompilerCommand, Global }
 import scala.tools.nsc.reporters.ConsoleReporter
 import scala.tools.nsc.util.{ Exceptional, stackTraceString }
 import scala.util.{ Try, Success, Failure }
+import scala.util.control.NoStackTrace
 import ClassPath.{ join, split }
 import TestState.{ Pass, Fail, Crash, Uninitialized, Updated }
 
@@ -254,6 +255,7 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
   private def execTestInProcess(outDir: File, logFile: File): Boolean = {
     val logWriter = new PrintStream(new FileOutputStream(logFile, true), true)
 
+    // TODO: Switch from this.getClass.getClassLoader to testClassPath
     val loader = ScalaClassLoader.fromURLs(List(outDir.toURI.toURL), this.getClass.getClassLoader)
     val clazz = Class.forName("Test", true, loader)
     val main = clazz.getDeclaredMethod("main", classOf[Array[String]])
@@ -263,6 +265,15 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
         case t: Throwable => t printStackTrace logWriter; false
       }
 
+    def withSysExitFails(t: => Boolean): Boolean = {
+      val saved = System.getSecurityManager
+      System setSecurityManager TrapExitSecurityManager(saved)
+      try t catch {
+        case TrapExitSecurityException(status) => if (status == 0) true else false
+      } finally
+        System setSecurityManager saved
+    }
+
     def invoke = foldWiths {
       main.invoke(null, Array("jvm"))
       true
@@ -271,7 +282,8 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
       Console withOut logWriter,
       Console withErr logWriter,
       withSysProps(assembleTestProperties(outDir, logFile)),
-      withPrintThrowableStackAndFail
+      withPrintThrowableStackAndFail,
+      withSysExitFails
     ))
 
     pushTranscript(s"Running Test in $outDir, writing to $logFile")
@@ -948,4 +960,33 @@ object Output {
       redirVar.value = saved
     }
   }
+}
+
+// Heavily borrowed from sbt
+final case class TrapExitSecurityException(status: Int) extends SecurityException with NoStackTrace
+final case class TrapExitSecurityManager(delegate: SecurityManager) extends SecurityManager {
+  import java.security._
+
+  /** SecurityManager hook to trap calls to `System.exit` to avoid shutting down the whole JVM. */
+  override def checkExit(status: Int): Unit = {
+    val stack = Thread.currentThread.getStackTrace
+    if (stack == null || (stack exists isRealExit)) throw TrapExitSecurityException(status)
+  }
+
+  /** This ensures that only actual calls to exit are trapped and not just calls to check if exit is allowed. */
+  private def isRealExit(element: StackTraceElement): Boolean =
+    element.getClassName == "java.lang.Runtime" && element.getMethodName == "exit"
+
+  // These are overridden to do nothing because there is a substantial filesystem performance penalty
+  // when there is a SecurityManager defined.  The default implementations of these construct a
+  // FilePermission, and its initialization involves canonicalization, which is expensive.
+  override def checkRead(file: String): Unit                  = ()
+  override def checkRead(file: String, context: AnyRef): Unit = ()
+  override def checkWrite(file: String): Unit                 = ()
+  override def checkDelete(file: String): Unit                = ()
+  override def checkExec(cmd: String): Unit                   = ()
+
+  override def checkPermission(perm: Permission): Unit = if (delegate ne null) delegate checkPermission perm
+  override def checkPermission(perm: Permission, context: AnyRef): Unit =
+    if (delegate ne null) delegate.checkPermission(perm, context)
 }
