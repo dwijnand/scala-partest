@@ -246,11 +246,17 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
   private def foldWiths[T](t: => T)(withs: Seq[WithThunk[T]]): T =
     withs.fold((t => t): WithThunk[T])((acc, with1) => x => acc(with1(x)))(t)
 
-  private def withSysProp[T](key: String, value: String): WithThunk[T] =
-    withX(value)(sys props key, v => if (v == null) sys.props -= key else sys.props(key) = v)
+//  private def withSysProp[T](key: String, value: String): WithThunk[T] =
+//    withX(value)(sys props key, v => if (v == null) sys.props -= key else sys.props(key) = v)
 
-  private def withSysProps[T](sysProps: Map[String, String]): WithThunk[T] =
-    t => foldWiths(t)(sysProps.toSeq.map(kv => withSysProp[T](kv._1, kv._2)))
+//  private def withSysProps[T](sysProps: Map[String, String]): WithThunk[T] =
+//    t => foldWiths(t)(sysProps.toSeq.map(kv => withSysProp[T](kv._1, kv._2)))
+
+  private def withSysProps[T](sysProps: Map[String, String]): WithThunk[T] = {
+    val props = new java.util.Properties()
+    sysProps foreach (kv => props.setProperty(kv._1, kv._2))
+    withX(props)(System.getProperties, System.setProperties)
+  }
 
   private def execTestInProcess(outDir: File, logFile: File): Boolean = {
     val logWriter = new PrintStream(new FileOutputStream(logFile, true), true)
