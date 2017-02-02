@@ -236,14 +236,14 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
   private def withX[T, X](x: X)(get: => X, set: X => Unit): WithThunk[T] =
     t => { val x0 = get; set(x); try t finally set(x0) }
 
-  private def foldWiths[T](withs: Seq[WithThunk[T]]): WithThunk[T] =
-    withs.fold((t => t): WithThunk[T])((acc, with1) => x => acc(with1(x)))
+  private def foldWiths[T](t: => T)(withs: Seq[WithThunk[T]]): T =
+    withs.fold((t => t): WithThunk[T])((acc, with1) => x => acc(with1(x)))(t)
 
   private def withSysProp[T](key: String, value: String): WithThunk[T] =
     withX(value)(sys props key, v => if (v == null) sys.props -= key else sys.props(key) = v)
 
   private def withSysProps[T](sysProps: Map[String, String]): WithThunk[T] =
-    foldWiths(sysProps.toSeq.map(kv => withSysProp[T](kv._1, kv._2)))
+    t => foldWiths(t)(sysProps.toSeq.map(kv => withSysProp[T](kv._1, kv._2)))
 
   private def execTestInProcess(outDir: File, logFile: File): Boolean = {
     val logWriter = new PrintStream(new FileOutputStream(logFile, true), true)
@@ -252,14 +252,7 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
     val clazz = Class.forName("Test", true, loader)
     val main = clazz.getDeclaredMethod("main", classOf[Array[String]])
 
-    val withEverything = foldWiths(Seq[WithThunk[Boolean]](
-      Output.withRedirected(logWriter),
-      Console withOut logWriter,
-      Console withErr logWriter,
-      withSysProps(assembleTestProperties(outDir, logFile))
-    ))
-
-    def invoke = withEverything {
+    def invoke = foldWiths {
       try {
         main.invoke(null, Array("jvm"))
         true
@@ -268,7 +261,13 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
           t.printStackTrace(logWriter)
           false
       }
-    }
+    }(Seq(
+      Output.withRedirected(logWriter),
+      Console withOut logWriter,
+      Console withErr logWriter,
+      withSysProps(assembleTestProperties(outDir, logFile))
+    ))
+
     pushTranscript(s"Running Test in $outDir, writing to $logFile")
     nextTestAction(execInProcessLock.synchronized(invoke)) {
       case false =>
