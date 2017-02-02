@@ -268,16 +268,20 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
     val clazz = Class.forName("Test", true, loader)
     val main = clazz.getDeclaredMethod("main", classOf[Array[String]])
 
+    import scala.tools.nsc.util.Exceptional
     def withPrintThrowableStackAndFail(t: => Boolean): Boolean =
       try t catch {
-        case t: Throwable => t printStackTrace logWriter; false
+        case t: Throwable => (Exceptional unwrap t) printStackTrace logWriter; false
       }
 
     def withSysExitFails(t: => Boolean): Boolean = {
       val saved = System.getSecurityManager
       System setSecurityManager TrapExitSecurityManager(saved)
       try t catch {
-        case TrapExitSecurityException(status) => if (status == 0) true else false
+        case t: Throwable => Exceptional unwrap t match {
+          case TrapExitSecurityException(status) => if (status == 0) true else false
+          case t                                 => throw t
+        }
       } finally
         System setSecurityManager saved
     }
@@ -290,8 +294,8 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
       Console withOut logWriter,
       Console withErr logWriter,
       withSysProps(assembleTestProperties(outDir, logFile)),
-      withPrintThrowableStackAndFail,
-      withSysExitFails
+      withSysExitFails,
+      withPrintThrowableStackAndFail
     ))
 
     pushTranscript(s"Running Test in $outDir, writing to $logFile")
