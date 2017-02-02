@@ -258,9 +258,12 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
         }
       }
     }
-    nextTestAction {
-      execInProcessLock.synchronized(invoke)
-    } { case _: Any => genPass() }
+    pushTranscript(s"Running Test in $outDir, writing to $logFile")
+    nextTestAction(execInProcessLock.synchronized(invoke)) {
+      case false =>
+        _transcript append EOL + logFile.fileContents
+        genFail("non-zero exit code")
+    }
   }
 
   private def execTestForked(outDir: File, logFile: File): Boolean = {
