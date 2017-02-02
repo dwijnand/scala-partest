@@ -253,7 +253,9 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
 //    t => foldWiths(t)(sysProps.toSeq.map(kv => withSysProp[T](kv._1, kv._2)))
 
   private def withSysProps[T](sysProps: Map[String, String]): WithThunk[T] = t => {
-    val saved = System.getProperties
+    import scala.collection.JavaConverters._
+    val saved = new java.util.Properties() // make our own local copy (don't just use System.getProperties)
+    for ((key, value) <- System.getProperties.asScala) saved.setProperty(key, value)
     for ((key, value) <- sysProps) sys.props(key) = value
     try t finally System setProperties saved
   }
