@@ -290,7 +290,7 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
       main.invoke(null, Array("jvm"))
       true
     }(Seq(
-      withX(logWriter)(System.out, (out => { logWriter.flush(); System setOut out }),
+      withX(logWriter)(System.out, (out => { logWriter.flush(); System setOut out })),
       withX(logWriter)(System.err, (err => { logWriter.flush(); System setErr err })),
 //      Output withRedirected logWriter,
       Console withOut logWriter,
