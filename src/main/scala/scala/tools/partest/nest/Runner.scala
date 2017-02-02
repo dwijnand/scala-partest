@@ -231,10 +231,6 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
     (pl buffer run) == 0
   }
 
-  // a running test needs exclusive access to stdout/stderr and exclusive
-  // access to customized system properties
-  private val execInProcessLock = new AnyRef
-
   private def execTestInProcess(outDir: File, logFile: File): Boolean = {
     val logWriter = new PrintStream(new FileOutputStream(logFile, true), true)
 
@@ -777,6 +773,10 @@ class SuiteRunner(
   val scalacOpts: String = PartestDefaults.scalacOpts) {
 
   import PartestDefaults.{ numThreads, waitTime }
+
+  // a running test needs exclusive access to stdout/stderr and exclusive
+  // access to customized system properties
+  val execInProcessLock = new AnyRef
 
   setUncaughtHandler
 
