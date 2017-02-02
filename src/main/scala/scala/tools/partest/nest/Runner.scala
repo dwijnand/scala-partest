@@ -155,6 +155,11 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
 
   val testFullPath = testFile.getAbsolutePath
 
+  private def fullClasspath = {
+    val classpath = joinPaths(extraClasspath ++ testClassPath)
+    join(outDir.toString, classpath)
+  }
+
   private def assembleTestProperties(outDir: File, logFile: File): Map[String, String] = {
     val extras =
       if (nestUI.debug) Map("partest.debug" -> "true")
@@ -162,7 +167,7 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
     Map(
       "file.encoding" -> "UTF-8",
       "java.library.path" -> logFile.getParentFile.getAbsolutePath,
-      "java.class.path" -> outDir.getAbsolutePath, // BytecodeTest's loadClassNode depends on this
+      "java.class.path" -> fullClasspath, // BytecodeTest's loadClassNode depends on this
       // TODO: Should this only be added when exec'ing in process?
       // TODO: Should instead BytecodeTEst use "partest.output"?
       "partest.output" -> outDir.getAbsolutePath,
@@ -193,12 +198,10 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
     // debug: Found javaopts file 'files/shootout/message.scala-2.javaopts', using options: '-Xss32k'
     // debug: java -Xss32k -Xss2m -Xms256M -Xmx1024M -classpath [...]
 
-    val classpath = joinPaths(extraClasspath ++ testClassPath)
-
     javaCmdPath +: (
       (suiteRunner.javaOpts.split(' ') ++ extraJavaOptions ++ argString.split(' ')).map(_.trim).filter(_ != "").toList ++ Seq(
         "-classpath",
-        join(outDir.toString, classpath)
+        fullClasspath
       ) ++ assembleTestProperties(outDir, logFile).map{case (prop, value) => s"-D$prop=$value"}
         ++ Seq(
         "scala.tools.nsc.MainGenericRunner",
@@ -255,7 +258,7 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
     val clazz = Class.forName("Test", true, loader)
     val main = clazz.getDeclaredMethod("main", classOf[Array[String]])
 
-    def withPrintStackAndFail(t: => Boolean): Boolean =
+    def withPrintThrowableStackAndFail(t: => Boolean): Boolean =
       try t catch {
         case t: Throwable => t printStackTrace logWriter; false
       }
@@ -268,7 +271,7 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
       Console withOut logWriter,
       Console withErr logWriter,
       withSysProps(assembleTestProperties(outDir, logFile)),
-      withPrintStackAndFail
+      withPrintThrowableStackAndFail
     ))
 
     pushTranscript(s"Running Test in $outDir, writing to $logFile")
