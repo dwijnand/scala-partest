@@ -252,10 +252,10 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
 //  private def withSysProps[T](sysProps: Map[String, String]): WithThunk[T] =
 //    t => foldWiths(t)(sysProps.toSeq.map(kv => withSysProp[T](kv._1, kv._2)))
 
-  private def withSysProps[T](sysProps: Map[String, String]): WithThunk[T] = {
-    val props = new java.util.Properties()
-    sysProps foreach (kv => props.setProperty(kv._1, kv._2))
-    withX(props)(System.getProperties, System.setProperties)
+  private def withSysProps[T](sysProps: Map[String, String]): WithThunk[T] = t => {
+    val saved = System.getProperties
+    for ((key, value) <- sysProps) sys.props(key) = value
+    try t finally System setProperties saved
   }
 
   private def execTestInProcess(outDir: File, logFile: File): Boolean = {
