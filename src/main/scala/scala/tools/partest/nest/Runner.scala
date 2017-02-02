@@ -231,6 +231,20 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
     (pl buffer run) == 0
   }
 
+  type WithThunk[T] = (=> T) => T
+
+  private def withX[T, X](x: X)(get: => X, set: X => Unit): WithThunk[T] =
+    t => { val x0 = get; set(x); try t finally set(x0) }
+
+  private def foldWiths[T](withs: Seq[WithThunk[T]]): WithThunk[T] =
+    withs.fold((t => t): WithThunk[T])((acc, with1) => x => acc(with1(x)))
+
+  private def withSysProp[T](key: String, value: String): WithThunk[T] =
+    withX(value)(sys props key, v => if (v == null) sys.props -= key else sys.props(key) = v)
+
+  private def withSysProps[T](sysProps: Map[String, String]): WithThunk[T] =
+    foldWiths(sysProps.toSeq.map(kv => withSysProp[T](kv._1, kv._2)))
+
   private def execTestInProcess(outDir: File, logFile: File): Boolean = {
     val logWriter = new PrintStream(new FileOutputStream(logFile, true), true)
 
@@ -238,19 +252,14 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
     val clazz = Class.forName("Test", true, loader)
     val main = clazz.getDeclaredMethod("main", classOf[Array[String]])
 
-    type WithThunk[T] = (=> T) => T
-    def foldWiths[T](withs: Seq[WithThunk[T]]): WithThunk[T] =
-      withs.fold((t => t): WithThunk[T])((acc, with1) => x => acc(with1(x)))
-
     val withEverything = foldWiths(Seq[WithThunk[Boolean]](
       Output.withRedirected(logWriter),
       Console withOut logWriter,
-      Console withErr logWriter
+      Console withErr logWriter,
+      withSysProps(assembleTestProperties(outDir, logFile))
     ))
 
     def invoke = withEverything {
-      for ((property, value) <- assembleTestProperties(outDir, logFile))
-        System.setProperty(property, value)
       try {
         main.invoke(null, Array("jvm"))
         true
