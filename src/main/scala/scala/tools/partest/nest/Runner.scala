@@ -311,8 +311,11 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
     }
   }
 
+  // "partest.forkall" is so we can measure the speedup we're getting
+  // from adding in-process support. but also, it might be useful
+  // from time to time for troubleshooting
   private def execTest(outDir: File, logFile: File): Boolean =
-    if (argsFile.exists())
+    if (argsFile.exists() || sys.BooleanProp.valueIsTrue("partest.forkall").value)
       execTestForked(outDir, logFile)
     else
       execTestInProcess(outDir, logFile)
