@@ -162,6 +162,9 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
     Map(
       "file.encoding" -> "UTF-8",
       "java.library.path" -> logFile.getParentFile.getAbsolutePath,
+      "java.class.path" -> outDir.getAbsolutePath, // BytecodeTest's loadClassNode depends on this
+      // TODO: Should this only be added when exec'ing in process?
+      // TODO: Should instead BytecodeTEst use "partest.output"?
       "partest.output" -> outDir.getAbsolutePath,
       "partest.lib" -> libraryUnderTest.getAbsolutePath,
       "partest.reflect" -> reflectUnderTest.getAbsolutePath,
