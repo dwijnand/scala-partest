@@ -4,7 +4,6 @@ import scala.tools.partest.nest.RunnerSpec
 import _root_.sbt.testing._
 import java.net.URLClassLoader
 import java.io.File
-import scala.util.control.NonFatal
 
 object Framework {
   // as partest is not driven by test classes discovered by sbt, need to add this marker fingerprint to definedTests
@@ -41,15 +40,11 @@ case class PartestTask(taskDef: TaskDef, args: Array[String]) extends Task {
     if (Runtime.getRuntime().maxMemory() / (1024*1024) < 800)
       loggers foreach (_.warn(s"""Low heap size detected (~ ${Runtime.getRuntime().maxMemory() / (1024*1024)}M). Please add the following to your build.sbt: javaOptions in Test += "-Xmx1G""""))
 
-    loggers foreach (_ error "loggers are working")
     try runner.run
     catch {
       case ex: ClassNotFoundException =>
         loggers foreach { l => l.error("Please make sure partest is running in a forked VM by including the following line in build.sbt:\nfork in Test := true") }
         throw ex
-      case NonFatal(t) =>
-        loggers foreach { l => l.error(s"PartestTask failed with: $t") }
-        throw t
     }
 
     Array()
