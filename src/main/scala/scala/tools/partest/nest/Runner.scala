@@ -21,6 +21,7 @@ import scala.tools.nsc.{ Settings, CompilerCommand, Global }
 import scala.tools.nsc.reporters.ConsoleReporter
 import scala.tools.nsc.util.{ Exceptional, stackTraceString }
 import scala.util.{ Try, Success, Failure }
+import scala.util.control.NoStackTrace
 import ClassPath.{ join, split }
 import TestState.{ Pass, Fail, Crash, Uninitialized, Updated }
 
@@ -81,6 +82,7 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
   val outFile    = logFile changeExtension "obj"
   val checkFile  = testFile changeExtension "check"
   val flagsFile  = testFile changeExtension "flags"
+  val argsFile   = testFile changeExtension "javaopts"
   val testIdent  = testFile.testIdent // e.g. pos/t1234
 
   lazy val outDir = { outFile.mkdirs() ; outFile }
@@ -152,14 +154,38 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
   )
   def nextTestActionFailing(reason: String): Boolean = nextTestActionExpectTrue(reason, false)
 
+  private def fullClasspath = {
+    val classpath = joinPaths(extraClasspath ++ testClassPath)
+    join(outDir.toString, classpath)
+  }
+
+  private def propertyOptions(outDir: File, logFile: File): Map[String, String] = {
+    val extras = if (nestUI.debug) Map("partest.debug" -> "true") else Map.empty
+    Map(
+      "file.encoding" -> "UTF-8",
+      "java.library.path" -> logFile.getParentFile.getAbsolutePath,
+      "java.class.path" -> fullClasspath, // BytecodeTest's loadClassNode depends on this
+      // TODO: Should this only be added when exec'ing in process?
+      // TODO: Should instead BytecodeTEst use "partest.output"?
+      "partest.output" -> outDir.getAbsolutePath,
+      "partest.lib" -> libraryUnderTest.getAbsolutePath,
+      "partest.reflect" -> reflectUnderTest.getAbsolutePath,
+      "partest.comp" -> compilerUnderTest.getAbsolutePath,
+      "partest.cwd" -> outDir.getParent,
+      "partest.test-path" -> testFile.getAbsolutePath,
+      "partest.testname" -> fileBase,
+      "javacmd" -> javaCmdPath,
+      "javaccmd" -> javacCmdPath,
+      "user.language" -> "en",
+      "user.country" -> "US"
+    ) ++ extras
+  }
+
   private def assembleTestCommand(outDir: File, logFile: File): List[String] = {
-    // check whether there is a ".javaopts" file
-    val argsFile  = testFile changeExtension "javaopts"
+    // check whether there is a non-empty ".javaopts" file
     val argString = file2String(argsFile)
     if (argString != "")
       nestUI.verbose("Found javaopts file '%s', using options: '%s'".format(argsFile, argString))
-
-    val testFullPath = testFile.getAbsolutePath
 
     // Note! As this currently functions, suiteRunner.javaOpts must precede argString
     // because when an option is repeated to java only the last one wins.
@@ -169,34 +195,16 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
     //
     // debug: Found javaopts file 'files/shootout/message.scala-2.javaopts', using options: '-Xss32k'
     // debug: java -Xss32k -Xss2m -Xms256M -Xmx1024M -classpath [...]
-    val extras = if (nestUI.debug) List("-Dpartest.debug=true") else Nil
-    val propertyOptions = List(
-      "-Dfile.encoding=UTF-8",
-      "-Djava.library.path="+logFile.getParentFile.getAbsolutePath,
-      "-Dpartest.output="+outDir.getAbsolutePath,
-      "-Dpartest.lib="+libraryUnderTest.getAbsolutePath,
-      "-Dpartest.reflect="+reflectUnderTest.getAbsolutePath,
-      "-Dpartest.comp="+compilerUnderTest.getAbsolutePath,
-      "-Dpartest.cwd="+outDir.getParent,
-      "-Dpartest.test-path="+testFullPath,
-      "-Dpartest.testname="+fileBase,
-      "-Djavacmd="+javaCmdPath,
-      "-Djavaccmd="+javacCmdPath,
-      "-Duser.language=en",
-      "-Duser.country=US"
-    ) ++ extras
-
-    val classpath = joinPaths(extraClasspath ++ testClassPath)
 
     javaCmdPath +: (
       (suiteRunner.javaOpts.split(' ') ++ extraJavaOptions ++ argString.split(' ')).map(_.trim).filter(_ != "").toList ++ Seq(
         "-classpath",
-        join(outDir.toString, classpath)
-      ) ++ propertyOptions ++ Seq(
+        fullClasspath
+      ) ++ propertyOptions(outDir, logFile).map { case (prop, value) => s"-D$prop=$value" } ++ Seq(
         "scala.tools.nsc.MainGenericRunner",
         "-usejavacp",
         "Test",
-        "jvm"
+        "jvm"  // what is this doing here? Scala.NET remnant?
       )
     )
   }
@@ -226,7 +234,77 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
     (pl buffer run) == 0
   }
 
-  private def execTest(outDir: File, logFile: File): Boolean = {
+  type WithThunk[T] = (=> T) => T
+
+  private def withX[T, X](x: X)(get: => X, set: X => Unit): WithThunk[T] =
+    t => { val x0 = get; set(x); try t finally set(x0) }
+
+  private def foldWiths[T](t: => T)(withs: Seq[WithThunk[T]]): T =
+    withs.fold((t => t): WithThunk[T])((acc, with1) => x => acc(with1(x)))(t)
+
+  private def withSysProp[T](key: String, value: String): WithThunk[T] =
+    withX(value)(sys props key, v => if (v == null) sys.props -= key else sys.props(key) = v)
+
+  private def withSysProps[T](sysProps: Map[String, String]): WithThunk[T] =
+    t => foldWiths(t)(sysProps.toSeq.map(kv => withSysProp[T](kv._1, kv._2)))
+
+  private def withOnlySysProps[T](sysProps: Map[String, String]): WithThunk[T] = t => {
+    import scala.collection.JavaConverters._
+    val saved = new java.util.Properties() // make our own local copy (don't just use System.getProperties)
+    for ((key, value) <- System.getProperties.asScala) saved.setProperty(key, value)
+    for ((key, value) <- sysProps) sys.props(key) = value
+    try t finally System setProperties saved
+  }
+
+  private def execTestInProcess(outDir: File, logFile: File): Boolean = {
+    val logWriter = new PrintStream(new FileOutputStream(logFile, true), true)
+
+    // TODO: Consider adding "extraClasspath", via dedup
+    val loader = ScalaClassLoader.fromURLs(List(outDir.toURI.toURL), testClassLoader)
+    val clazz = Class.forName("Test", true, loader)
+    val main = clazz.getDeclaredMethod("main", classOf[Array[String]])
+
+    import scala.tools.nsc.util.Exceptional
+    def withThrowableLogsAndFails(t: => Boolean): Boolean =
+      try t catch {
+        case t: Throwable => (Exceptional unwrap t) printStackTrace logWriter; false
+      }
+
+    def withSysExitFails(t: => Boolean): Boolean = {
+      val saved = System.getSecurityManager
+      System setSecurityManager TrapExitSecurityManager(saved)
+      try t catch {
+        case t: Throwable => Exceptional unwrap t match {
+          case TrapExitSecurityException(status) => if (status == 0) true else false
+          case t                                 => throw t
+        }
+      } finally
+        System setSecurityManager saved
+    }
+
+    def invoke = foldWiths {
+      main.invoke(null, Array("jvm"))
+      true
+    }(Seq(
+      withX(logWriter)(System.out, { out => logWriter.flush(); System setOut out }),
+      withX(logWriter)(System.err, { err => logWriter.flush(); System setErr err }),
+//      Output withRedirected logWriter,
+      Console withOut logWriter,
+      Console withErr logWriter,
+      withOnlySysProps(propertyOptions(outDir, logFile)),
+      withSysExitFails,
+      withThrowableLogsAndFails
+    ))
+
+    pushTranscript(s"Running Test in $outDir, writing to $logFile")
+    nextTestAction(execInProcessLock.synchronized(invoke)) {
+      case false =>
+        _transcript append EOL + logFile.fileContents
+        genFail("non-zero exit code")
+    }
+  }
+
+  private def execTestForked(outDir: File, logFile: File): Boolean = {
     val cmd = assembleTestCommand(outDir, logFile)
 
     pushTranscript((cmd mkString s" \\$EOL  ") + " > " + logFile.getName)
@@ -236,6 +314,16 @@ class Runner(val testFile: File, val suiteRunner: SuiteRunner, val nestUI: NestU
         genFail("non-zero exit code")
     }
   }
+
+
+  /** To opt-out of running the tests in-process, rollback to forking them all. */
+  private def execTestForkAll: Boolean = java.lang.Boolean getBoolean "partest.exec_test_fork_all"
+
+  private def execTest(outDir: File, logFile: File): Boolean =
+    if (argsFile.exists() || execTestForkAll)
+      execTestForked(outDir, logFile)
+    else
+      execTestInProcess(outDir, logFile)
 
   override def toString = s"""Test($testIdent, lastState = $lastState)"""
 
@@ -732,6 +820,10 @@ class SuiteRunner(
 
   import PartestDefaults.{ numThreads, waitTime }
 
+  // a running test needs exclusive access to stdout/stderr and exclusive
+  // access to customized system properties
+  val execInProcessLock = new AnyRef
+
   setUncaughtHandler
 
   // TODO: make this immutable
@@ -882,4 +974,33 @@ object Output {
       redirVar.value = saved
     }
   }
+}
+
+// Heavily borrowed from sbt
+final case class TrapExitSecurityException(status: Int) extends SecurityException with NoStackTrace
+final case class TrapExitSecurityManager(delegate: SecurityManager) extends SecurityManager {
+  import java.security._
+
+  /** SecurityManager hook to trap calls to `System.exit` to avoid shutting down the whole JVM. */
+  override def checkExit(status: Int): Unit = {
+    val stack = Thread.currentThread.getStackTrace
+    if (stack == null || (stack exists isRealExit)) throw TrapExitSecurityException(status)
+  }
+
+  /** This ensures that only actual calls to exit are trapped and not just calls to check if exit is allowed. */
+  private def isRealExit(element: StackTraceElement): Boolean =
+    element.getClassName == "java.lang.Runtime" && element.getMethodName == "exit"
+
+  // These are overridden to do nothing because there is a substantial filesystem performance penalty
+  // when there is a SecurityManager defined.  The default implementations of these construct a
+  // FilePermission, and its initialization involves canonicalization, which is expensive.
+  override def checkRead(file: String): Unit                  = ()
+  override def checkRead(file: String, context: AnyRef): Unit = ()
+  override def checkWrite(file: String): Unit                 = ()
+  override def checkDelete(file: String): Unit                = ()
+  override def checkExec(cmd: String): Unit                   = ()
+
+  override def checkPermission(perm: Permission): Unit = if (delegate ne null) delegate checkPermission perm
+  override def checkPermission(perm: Permission, context: AnyRef): Unit =
+    if (delegate ne null) delegate.checkPermission(perm, context)
 }
